@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/dropbox/files"
@@ -50,12 +51,12 @@ func getFileMetadata(c files.Client, path string) (files.IsMetadata, error) {
 	return res, nil
 }
 
-func formatFolderMetadata(w io.Writer, e *files.FolderMetadata, longFormat bool) (string) {
-	text := fmt.Sprintf("%s/\t", e.PathDisplay)
+// TODO: Delete
+func printFolderMetadata(w io.Writer, e *files.FolderMetadata, longFormat bool) {
 	if longFormat {
-		text = fmt.Sprintf("-\t-\t-\t") + text
+		fmt.Fprintf(w, "-\t-\t-\t")
 	}
-	return text
+	fmt.Fprintf(w, "%s\t", e.PathDisplay)
 }
 
 func printFileMetadata(w io.Writer, e *files.FileMetadata, longFormat bool) {
@@ -65,11 +66,28 @@ func printFileMetadata(w io.Writer, e *files.FileMetadata, longFormat bool) {
 	fmt.Fprintf(w, "%s\t", e.PathDisplay)
 }
 
-func printDeletedMetadata(w io.Writer, e *files.DeletedMetadata, longFormat bool) {
+func formatFolderMetadata(w io.Writer, e *files.FolderMetadata, longFormat bool) string {
+	text := fmt.Sprintf("%s/\t", e.PathDisplay)
 	if longFormat {
-		fmt.Fprintf(w, "-\t-\t-\t")
+		text = fmt.Sprintf("-\t-\t-\t") + text
 	}
-	fmt.Fprintf(w, "%s\t", e.PathDisplay)
+	return text
+}
+
+func formatFileMetadata(w io.Writer, e *files.FileMetadata, longFormat bool) string {
+	text := fmt.Sprintf("%s\t", e.PathDisplay)
+	if longFormat {
+		text = fmt.Sprintf("%s\t%s\t%s\t", e.Rev, humanize.IBytes(e.Size), humanize.Time(e.ServerModified)) + text
+	}
+	return text
+}
+
+func formatDeletedMetadata(w io.Writer, e *files.DeletedMetadata, longFormat bool) string {
+	text := fmt.Sprintf("%s\t", e.PathDisplay)
+	if longFormat {
+		text = fmt.Sprintf("-\t-\t-\t") + text
+	}
+	return text
 }
 
 func typeof(v interface{}) string {
@@ -84,14 +102,28 @@ func ls(cmd *cobra.Command, args []string) (err error) {
 	logOut := new(tabwriter.Writer)
 	logOut.Init(os.Stderr, 4, 8, 1, ' ', 0)
 	debug := func(message string) {
-		fmt.Fprint(w, string(colorCyan)+"DEBUG: "+message+string(colorReset)+"\n")
+		//fmt.Fprint(w, string(colorCyan)+"DEBUG: "+message+string(colorReset)+"\n")
 	}
 	error := func(message string) {
 		fmt.Fprint(w, string(colorRed)+"DEBUG: "+message+string(colorReset)+"\n")
 	}
 
-	print := func(message string) {
+	long, _ := cmd.Flags().GetBool("long")
+
+	itemCounter := 0
+	newLineCounter := 0
+
+	printItem := func(message string) {
+		itemCounter = itemCounter + 1
+		// debug(fmt.Sprintf("itemCounter=%v; newLineCounter=%v", itemCounter, newLineCounter))
+		if strings.TrimSpace(message) == "" {
+			error("Message is blank")
+		}
 		fmt.Fprint(w, message)
+		if (itemCounter%4 == 0) || (long && (itemCounter > newLineCounter)) {
+			newLineCounter = newLineCounter + 1
+			fmt.Fprintln(w)
+		}
 	}
 
 	path := ""
@@ -171,13 +203,8 @@ func ls(cmd *cobra.Command, args []string) (err error) {
 	// 		// Ignore
 	// 	}
 	// }
-
 	// debug(fmt.Sprintf("items.Count = %v", len(items)))
 
-	long, _ := cmd.Flags().GetBool("long")
-
-	itemCounter := 0
-	newLineCounter := 0
 	if long {
 		fmt.Fprint(w, "Revision\tSize\tLast modified\tPath\n")
 	}
@@ -186,13 +213,11 @@ func ls(cmd *cobra.Command, args []string) (err error) {
 		switch f := entry.(type) {
 		case *files.FileMetadata:
 			if !onlyDeleted {
-				printFileMetadata(w, f, long)
-				itemCounter = itemCounter + 1
+				printItem(formatFileMetadata(w, f, long))
 			}
 		case *files.FolderMetadata:
 			if !onlyDeleted {
-				printFolderMetadata(w, f, long)
-				itemCounter = itemCounter + 1
+				printItem(formatFolderMetadata(w, f, long))
 			}
 		case *files.DeletedMetadata:
 			revisionArg := files.NewListRevisionsArg(f.PathLower)
@@ -215,20 +240,17 @@ func ls(cmd *cobra.Command, args []string) (err error) {
 						case *files.FileMetadata:
 							if !onlyDeleted {
 								debug("Retrieved revision for deleted File: " + x.PathLower)
-								printFileMetadata(w, x, long)
-								itemCounter = itemCounter + 1
+								printItem(formatFileMetadata(w, x, long))
 							}
 						case *files.FolderMetadata:
 							if !onlyDeleted {
 								debug("Retrieved revision for deleted Folder: " + x.PathLower)
-								printFolderMetadata(w, x, long)
-								itemCounter = itemCounter + 1
+								printItem(formatFolderMetadata(w, x, long))
 							}
 						case *files.DeletedMetadata:
 							debug("Retrieved revision for deleted DeletedMetadata: " + x.PathLower)
 							f.PathDisplay = fmt.Sprintf(deletedItemFormatString, x.PathDisplay)
-							printDeletedMetadata(w, x, long)
-							itemCounter = itemCounter + 1
+							printItem(formatDeletedMetadata(w, x, long))
 						default:
 							error("Unexpected Type for mesRest = " + typeof(metaRes))
 						}
@@ -242,21 +264,14 @@ func ls(cmd *cobra.Command, args []string) (err error) {
 			} else if len(res.Entries) == 0 {
 				// Occasionally revisions will be returned with an empty Entries list.
 				f.PathDisplay = fmt.Sprintf(deletedItemFormatString, f.PathDisplay)
-				printDeletedMetadata(w, f, long)
-				itemCounter = itemCounter + 1
+				printItem(formatDeletedMetadata(w, f, long))
 			} else {
 				res.Entries[0].PathDisplay = fmt.Sprintf(deletedItemFormatString, res.Entries[0].PathDisplay)
-				printFileMetadata(w, res.Entries[0], long)
-				itemCounter = itemCounter + 1
+				printItem(formatFileMetadata(w, res.Entries[0], long))
 			}
 		default:
 			debug("Item of unknown type (not FileMetadata, FolderMetadata, or DeletedMetadata) when iterating over all items")
 			// Ignore
-		}
-		// debug(fmt.Sprintf("itemCounter=%v; newLineCounter=%v", itemCounter, newLineCounter))
-		if (itemCounter%4 == 0) || (long && (itemCounter > newLineCounter)) {
-			fmt.Fprintln(w)
-			newLineCounter = newLineCounter + 1
 		}
 	}
 
